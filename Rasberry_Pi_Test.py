@@ -12,10 +12,10 @@ from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
 
 # 모델 및 데이터 설정
-MODEL_PATH = 'Final_Project/data/models/cnn_fall_detection.tflite'
+MODEL_PATH = '/Final_Project/data\models/tflite_model/fall_detection_tflite_friendly.tflite'
 SCALER_MEAN_PATH = 'Final_Project/data/models/cnn_fall_detection_scaler_mean.npy'
 SCALER_SCALE_PATH = 'Final_Project/data/models/cnn_fall_detection_scaler_scale.npy'
-TEST_DATA_PATH = '/content/drive/MyDrive/KFall_dataset/test_data'  # 테스트 데이터 경로
+TEST_DATA_PATH = '/Final_Project/data/test'  # 테스트 데이터 경로
 SEQ_LENGTH = 100  # 시퀀스 길이
 N_FEATURES = 9    # 특징 수 (AccX, AccY, AccZ, GyrX, GyrY, GyrZ, EulerX, EulerY, EulerZ)
 
