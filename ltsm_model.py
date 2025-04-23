@@ -201,28 +201,12 @@ if len(X) > 0:
     print(f"Test shape: {X_test_scaled.shape}, Test labels: {y_test.shape}")
     print(f"Class weights: {class_weight_dict}")
     
-    # LSTM 모델 구축 (TFLite 호환성을 위해 명시적으로 설정)
+    # LSTM 모델 구축
     def create_lstm_model(input_shape):
-        # GPU 환경에서도 CuDNN이 아닌 기본 LSTM 구현 사용
-        import os
-        os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
-        
         model = Sequential([
-            # implementation=1은 non-CuDNN 버전 강제
-            LSTM(64, return_sequences=True, 
-                 activation='tanh',
-                 recurrent_activation='sigmoid',
-                 implementation=1,
-                 use_bias=True,
-                 unroll=False,
-                 input_shape=input_shape),
+            Bidirectional(LSTM(64, return_sequences=True), input_shape=input_shape),
             Dropout(0.3),
-            LSTM(32,
-                 activation='tanh',
-                 recurrent_activation='sigmoid',
-                 implementation=1,
-                 use_bias=True,
-                 unroll=False),
+            Bidirectional(LSTM(32)),
             Dropout(0.3),
             Dense(16, activation='relu'),
             Dropout(0.3),
@@ -242,7 +226,7 @@ if len(X) > 0:
     
     # 콜백 설정
     early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-    model_checkpoint = ModelCheckpoint('/content/drive/MyDrive/KFall_dataset/best_model.h5', 
+    model_checkpoint = ModelCheckpoint('/content/drive/MyDrive/KFall_dataset/best_model.keras', 
                                      monitor='val_loss', 
                                      save_best_only=True)
     
@@ -250,7 +234,7 @@ if len(X) > 0:
     print("\n모델 학습 시작...")
     history = model.fit(X_train_scaled, y_train,
                        validation_data=(X_val_scaled, y_val),
-                       epochs=100,
+                       epochs=50,
                        batch_size=32,
                        class_weight=class_weight_dict,
                        callbacks=[early_stopping, model_checkpoint],
@@ -316,27 +300,9 @@ if len(X) > 0:
         avg_lead_time = np.mean(lead_times) * 1000  # ms로 변환
         print(f"\n평균 리드 타임: {avg_lead_time:.2f} ms")
     
-    # TensorFlow Lite 변환 (CuDNN 문제 해결)
-    print("\nTensorFlow Lite 모델로 변환 중...")
-    
-    # 어제 성공한 방식대로 직접 변환
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    
-    # 동적 범위 양자화 (모델 크기 감소)
-    converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    
-    # TFLite 모델로 변환
-    tflite_converted = converter.convert()
-    
-    # TFLite 모델 저장
-    tflite_path = '/content/drive/MyDrive/KFall_dataset/fall_detection_model.tflite'
-    with open(tflite_path, 'wb') as f:
-        f.write(tflite_converted)
-    
-    print(f"TFLite 모델 저장 완료: {tflite_path}")
-    
+
     # 모델과 학습 데이터 저장
-    model.save('/content/drive/MyDrive/KFall_dataset/lstm_model.h5')
+    model.save('/content/drive/MyDrive/KFall_dataset/lstm_model.keras')
     np.save('/content/drive/MyDrive/KFall_dataset/X_train.npy', X_train)
     np.save('/content/drive/MyDrive/KFall_dataset/y_train.npy', y_train)
     np.save('/content/drive/MyDrive/KFall_dataset/X_test.npy', X_test)
