@@ -2,37 +2,35 @@ import os
 import time
 import numpy as np
 import pandas as pd
-import tensorflow as tf
+# TensorFlow 대신 TFLite 런타임 사용
+import tflite_runtime.interpreter as tflite
 from collections import deque
 import threading
 import signal
 import sys
-import matplotlib.pyplot as plt
-from sklearn.metrics import classification_report, confusion_matrix
-import seaborn as sns
 
-# 하드웨어 에뮬레이션 모드 설정
-HARDWARE_MODE = "SIMULATION"  # "SIMULATION" 또는 "RASPBERRY_PI"
-
-# 실제 하드웨어가 사용 가능한 경우만 임포트
-if HARDWARE_MODE == "RASPBERRY_PI":
-    try:
-        import RPi.GPIO as GPIO
-        import smbus
-        HARDWARE_AVAILABLE = True
-    except ImportError:
-        print("라즈베리 파이 하드웨어 라이브러리를 임포트할 수 없습니다. 시뮬레이션 모드로 실행합니다.")
-        HARDWARE_MODE = "SIMULATION"
-        HARDWARE_AVAILABLE = False
-else:
+# 라즈베리 파이에서 사용 가능한 경우 GPIO 라이브러리 가져오기
+try:
+    import RPi.GPIO as GPIO
+    HARDWARE_AVAILABLE = True
+except ImportError:
+    print("GPIO 라이브러리를 가져올 수 없습니다. 출력 에뮬레이션 모드로 실행합니다.")
     HARDWARE_AVAILABLE = False
 
-# GPIO 핀 설정 (라즈베리 파이 모드에서만 사용)
+# 하드웨어 센서 사용 가능한 경우 SMBus 가져오기
+try:
+    import smbus
+    SENSOR_AVAILABLE = True
+except ImportError:
+    print("SMBus 라이브러리를 가져올 수 없습니다. 센서 에뮬레이션 모드로 실행합니다.")
+    SENSOR_AVAILABLE = False
+
+# GPIO 핀 설정 (하드웨어 이용 가능한 경우만)
 LED_PIN = 17      # 낙상 경고용 LED
 BUZZER_PIN = 18   # 낙상 경고용 부저
 BUTTON_PIN = 27   # 알람 중지 버튼
 
-# MPU6050 I2C 설정 (라즈베리 파이 모드에서만 사용)
+# MPU6050 I2C 설정
 MPU6050_ADDR = 0x68
 PWR_MGMT_1 = 0x6B
 SMPLRT_DIV = 0x19
@@ -43,11 +41,11 @@ ACCEL_XOUT_H = 0x3B
 GYRO_XOUT_H = 0x43
 
 # 모델 및 데이터 설정
-MODEL_PATH = 'C:/gitproject/Final_Project/data/models/tflite_model/fall_detection_compatible.tflite'
-SCALER_MEAN_PATH = 'C:/gitproject/Final_Project/data/models/tflite_model/extracted_scaler_mean.npy'
-SCALER_SCALE_PATH = 'C:/gitproject/Final_Project/data/models/tflite_model/extracted_scaler_scale.npy'
-TEST_DATA_PATH = 'C:/gitproject/Final_Project/data/test'  # 테스트 데이터 경로
-SEQ_LENGTH = 50   # 시퀀스 길이
+MODEL_PATH = '/home/pi/Final_Project/data/models/tflite_model/fall_detection_compatible.tflite'
+SCALER_MEAN_PATH = '/home/pi/Final_Project/data/models/tflite_model/extracted_scaler_mean.npy'
+SCALER_SCALE_PATH = '/home/pi/Final_Project/data/models/tflite_model/extracted_scaler_scale.npy'
+TEST_DATA_PATH = '/home/pi/Final_Project/data/test'  # 테스트 데이터 경로 (시뮬레이션에 사용)
+SEQ_LENGTH = 50  # 시퀀스 길이 
 N_FEATURES = 9    # 특징 수 (AccX, AccY, AccZ, GyrX, GyrY, GyrZ, EulerX, EulerY, EulerZ)
 SAMPLING_RATE = 100  # Hz (데이터셋의 샘플링 레이트에 맞춤)
 
@@ -57,151 +55,20 @@ LOG_DIR = 'logs'
 LOG_FILE = 'imu_data.csv'
 LOG_INTERVAL = 600  # 10분마다 새 로그 파일
 
-# 시뮬레이션 데이터 경로
-SIM_DATA_PATH = TEST_DATA_PATH  # 테스트 데이터를 시뮬레이션에 활용
+# 시뮬레이션 모드 설정
+SIMULATION_MODE = not SENSOR_AVAILABLE
 
-# 시뮬레이션된 MPU6050 센서 클래스
-class SimulatedIMUSensor:
-    def __init__(self, data_path=SIM_DATA_PATH):
-        """시뮬레이션된 IMU 센서 초기화"""
-        print("시뮬레이션된 IMU 센서 초기화 중...")
-        self.frame_counter = 0
-        self.sim_data = self.load_simulation_data(data_path)
-        self.data_index = 0
-        self.sim_data_length = len(self.sim_data)
-        print(f"시뮬레이션 데이터 로드 완료: {self.sim_data_length}개 샘플")
-    
-    def load_simulation_data(self, data_path):
-        """시뮬레이션 데이터 로드"""
-        # 테스트 데이터 파일 경로
-        X_test_path = os.path.join(data_path, 'X_test.npy')
-        y_test_path = os.path.join(data_path, 'y_test.npy')
-        
-        if not os.path.exists(X_test_path) or not os.path.exists(y_test_path):
-            print(f"시뮬레이션 데이터를 찾을 수 없습니다. 경로: {data_path}")
-            # 더미 데이터 생성
-            return self.generate_dummy_data()
-        
-        try:
-            # 테스트 데이터 로드
-            X_test = np.load(X_test_path)
-            y_test = np.load(y_test_path)
-            
-            print(f"시뮬레이션 데이터 로드 완료: X_test shape={X_test.shape}, y_test shape={y_test.shape}")
-            
-            # 시뮬레이션에 사용할 데이터 준비
-            sim_data = []
-            for i in range(len(X_test)):
-                for j in range(X_test.shape[1]):
-                    # X_test[i, j]를 딕셔너리로 변환
-                    sample = {
-                        'TimeStamp(s)': time.time() + (j * 0.01),  # 100Hz 가정
-                        'FrameCounter': self.frame_counter,
-                        'AccX': X_test[i, j, 0],
-                        'AccY': X_test[i, j, 1],
-                        'AccZ': X_test[i, j, 2],
-                        'GyrX': X_test[i, j, 3],
-                        'GyrY': X_test[i, j, 4],
-                        'GyrZ': X_test[i, j, 5],
-                        'EulerX': X_test[i, j, 6],
-                        'EulerY': X_test[i, j, 7],
-                        'EulerZ': X_test[i, j, 8],
-                        'Label': y_test[i]  # 레이블 추가 (낙상 여부)
-                    }
-                    sim_data.append(sample)
-                    self.frame_counter += 1
-            
-            return sim_data
-        except Exception as e:
-            print(f"시뮬레이션 데이터 로드 오류: {str(e)}")
-            return self.generate_dummy_data()
-    
-    def generate_dummy_data(self, n_samples=10000):
-        """테스트 데이터가 없을 경우 더미 데이터 생성"""
-        print("더미 IMU 데이터 생성 중...")
-        dummy_data = []
-        
-        for i in range(n_samples):
-            # 가끔 낙상 이벤트 생성
-            is_fall = np.random.random() < 0.05  # 5%의 낙상 확률
-            
-            if is_fall:
-                # 낙상 이벤트 시뮬레이션 (갑작스러운 가속도 변화)
-                acc_magnitude = np.random.uniform(1.5, 3.0)  # g 단위
-                gyro_magnitude = np.random.uniform(100, 200)  # °/s 단위
-            else:
-                # 일반 움직임 시뮬레이션
-                acc_magnitude = np.random.uniform(0.8, 1.2)  # g 단위
-                gyro_magnitude = np.random.uniform(5, 30)  # °/s 단위
-            
-            # 랜덤 방향
-            acc_direction = np.random.normal(0, 1, 3)
-            acc_direction = acc_direction / np.linalg.norm(acc_direction)
-            
-            gyro_direction = np.random.normal(0, 1, 3)
-            gyro_direction = gyro_direction / np.linalg.norm(gyro_direction)
-            
-            # 가속도 및 자이로스코프 값
-            accel_x = acc_direction[0] * acc_magnitude
-            accel_y = acc_direction[1] * acc_magnitude
-            accel_z = acc_direction[2] * acc_magnitude
-            
-            gyro_x = gyro_direction[0] * gyro_magnitude
-            gyro_y = gyro_direction[1] * gyro_magnitude
-            gyro_z = gyro_direction[2] * gyro_magnitude
-            
-            # 오일러 각도 (단순화된 계산)
-            euler_x = np.arctan2(accel_y, np.sqrt(accel_x**2 + accel_z**2)) * 180 / np.pi
-            euler_y = np.arctan2(-accel_x, np.sqrt(accel_y**2 + accel_z**2)) * 180 / np.pi
-            euler_z = np.arctan2(accel_z, np.sqrt(accel_x**2 + accel_y**2)) * 180 / np.pi
-            
-            # 샘플 데이터
-            sample = {
-                'TimeStamp(s)': time.time() + (i * 0.01),  # 100Hz 가정
-                'FrameCounter': self.frame_counter,
-                'AccX': accel_x,
-                'AccY': accel_y,
-                'AccZ': accel_z,
-                'GyrX': gyro_x,
-                'GyrY': gyro_y,
-                'GyrZ': gyro_z,
-                'EulerX': euler_x,
-                'EulerY': euler_y,
-                'EulerZ': euler_z,
-                'Label': 1 if is_fall else 0  # 낙상 여부
-            }
-            
-            dummy_data.append(sample)
-            self.frame_counter += 1
-        
-        print(f"더미 데이터 생성 완료: {len(dummy_data)}개 샘플")
-        return dummy_data
-    
-    def get_data(self):
-        """다음 IMU 센서 데이터 가져오기"""
-        # 시뮬레이션 데이터 순환
-        if self.data_index >= self.sim_data_length:
-            self.data_index = 0
-            print("시뮬레이션 데이터를 처음부터 다시 사용합니다.")
-        
-        data = self.sim_data[self.data_index]
-        self.data_index += 1
-        
-        # 현재 타임스탬프로 업데이트
-        data['TimeStamp(s)'] = time.time()
-        
-        return data
-
-# 실제 MPU6050 센서 클래스 (라즈베리 파이에서만 사용)
+# 실제 MPU6050 센서 클래스
 class MPU6050Sensor:
     def __init__(self):
         """실제 IMU 센서 (MPU6050) 초기화 및 I2C 설정"""
-        if not HARDWARE_AVAILABLE:
-            raise ImportError("하드웨어 라이브러리가 설치되어 있지 않습니다.")
+        if not SENSOR_AVAILABLE:
+            raise ImportError("smbus 라이브러리가 설치되어 있지 않습니다.")
         
         self.bus = smbus.SMBus(1)  # I2C 버스 1 사용
         self.setup_mpu6050()
         self.frame_counter = 0
+        print("MPU6050 센서 초기화 완료")
         
     def setup_mpu6050(self):
         """MPU6050 센서 초기 설정"""
@@ -270,6 +137,125 @@ class MPU6050Sensor:
             'EulerY': accel_yangle,
             'EulerZ': accel_zangle
         }
+
+# 시뮬레이션된 센서 클래스
+class SimulatedSensor:
+    def __init__(self, data_path=TEST_DATA_PATH):
+        """시뮬레이션된 IMU 센서 초기화"""
+        print("시뮬레이션된 IMU 센서 초기화 중...")
+        self.frame_counter = 0
+        
+        # 테스트 데이터 로드 시도
+        try:
+            X_test = np.load(os.path.join(data_path, 'X_test.npy'))
+            y_test = np.load(os.path.join(data_path, 'y_test.npy'))
+            print(f"시뮬레이션을 위한 테스트 데이터 로드 완료: {X_test.shape[0]}개 샘플")
+            
+            # 시뮬레이션용 데이터 준비
+            self.sim_data = []
+            for i in range(min(100, X_test.shape[0])):  # 처음 100개 샘플만 사용
+                for j in range(X_test.shape[1]):  # 각 시간 단계
+                    sample = {
+                        'TimeStamp(s)': time.time() + j * 0.01,  # 100Hz 가정
+                        'FrameCounter': self.frame_counter,
+                        'AccX': X_test[i, j, 0],
+                        'AccY': X_test[i, j, 1],
+                        'AccZ': X_test[i, j, 2],
+                        'GyrX': X_test[i, j, 3],
+                        'GyrY': X_test[i, j, 4],
+                        'GyrZ': X_test[i, j, 5],
+                        'EulerX': X_test[i, j, 6],
+                        'EulerY': X_test[i, j, 7],
+                        'EulerZ': X_test[i, j, 8],
+                        'Label': y_test[i]
+                    }
+                    self.sim_data.append(sample)
+                    self.frame_counter += 1
+            
+            print(f"시뮬레이션 데이터 준비 완료: {len(self.sim_data)}개 샘플")
+        except Exception as e:
+            print(f"테스트 데이터 로드 실패, 더미 데이터 생성: {e}")
+            self.sim_data = self._generate_dummy_data(100 * SEQ_LENGTH)  # 더미 데이터 생성
+        
+        self.data_index = 0
+        self.data_length = len(self.sim_data)
+    
+    def _generate_dummy_data(self, n_samples=5000):
+        """시뮬레이션용 더미 데이터 생성"""
+        print("더미 데이터 생성 중...")
+        dummy_data = []
+        
+        fall_probability = 0.05  # 5%의 낙상 확률
+        
+        for i in range(n_samples):
+            # 5초마다 낙상 이벤트 생성
+            is_fall_sequence = (i // 500) % 20 == 0
+            
+            if is_fall_sequence and i % 500 >= 450:  # 낙상 시퀀스의 마지막 50 프레임
+                # 낙상 이벤트 시뮬레이션 (갑작스러운 가속도 변화)
+                acc_magnitude = np.random.uniform(1.5, 3.0)  # g 단위
+                gyro_magnitude = np.random.uniform(100, 200)  # °/s 단위
+            else:
+                # 일반 움직임 시뮬레이션
+                acc_magnitude = np.random.uniform(0.8, 1.2)  # g 단위
+                gyro_magnitude = np.random.uniform(5, 30)  # °/s 단위
+            
+            # 랜덤 방향
+            acc_direction = np.random.normal(0, 1, 3)
+            acc_direction = acc_direction / np.linalg.norm(acc_direction)
+            
+            gyro_direction = np.random.normal(0, 1, 3)
+            gyro_direction = gyro_direction / np.linalg.norm(gyro_direction)
+            
+            # 가속도 및 자이로스코프 값
+            accel_x = acc_direction[0] * acc_magnitude
+            accel_y = acc_direction[1] * acc_magnitude
+            accel_z = acc_direction[2] * acc_magnitude
+            
+            gyro_x = gyro_direction[0] * gyro_magnitude
+            gyro_y = gyro_direction[1] * gyro_magnitude
+            gyro_z = gyro_direction[2] * gyro_magnitude
+            
+            # 오일러 각도 계산
+            euler_x = np.arctan2(accel_y, np.sqrt(accel_x**2 + accel_z**2)) * 180 / np.pi
+            euler_y = np.arctan2(-accel_x, np.sqrt(accel_y**2 + accel_z**2)) * 180 / np.pi
+            euler_z = np.arctan2(accel_z, np.sqrt(accel_x**2 + accel_y**2)) * 180 / np.pi
+            
+            # 샘플 데이터
+            sample = {
+                'TimeStamp(s)': time.time() + (i * 0.01),
+                'FrameCounter': self.frame_counter,
+                'AccX': accel_x,
+                'AccY': accel_y,
+                'AccZ': accel_z,
+                'GyrX': gyro_x,
+                'GyrY': gyro_y,
+                'GyrZ': gyro_z,
+                'EulerX': euler_x,
+                'EulerY': euler_y,
+                'EulerZ': euler_z,
+                'Label': 1 if is_fall_sequence and i % 500 >= 450 else 0
+            }
+            
+            dummy_data.append(sample)
+            self.frame_counter += 1
+        
+        print(f"더미 데이터 생성 완료: {len(dummy_data)}개 샘플")
+        return dummy_data
+    
+    def get_data(self):
+        """다음 시뮬레이션 데이터 가져오기"""
+        if self.data_index >= self.data_length:
+            self.data_index = 0
+            print("시뮬레이션 데이터를 처음부터 다시 사용합니다.")
+        
+        data = self.sim_data[self.data_index]
+        self.data_index += 1
+        
+        # 현재 타임스탬프로 업데이트
+        data['TimeStamp(s)'] = time.time()
+        
+        return data
 
 # 데이터 로깅 클래스
 class DataLogger:
@@ -345,12 +331,12 @@ class OutputDeviceEmulator:
         self.set_buzzer(False)
         print("출력 장치 정리 완료")
 
-# 실제 출력 장치 제어 클래스 (라즈베리 파이에서만 사용)
+# 실제 하드웨어 출력 장치
 class HardwareOutputDevices:
     def __init__(self, led_pin=LED_PIN, buzzer_pin=BUZZER_PIN, button_pin=BUTTON_PIN):
         """실제 하드웨어 출력 장치 초기화"""
         if not HARDWARE_AVAILABLE:
-            raise ImportError("하드웨어 라이브러리가 설치되어 있지 않습니다.")
+            raise ImportError("GPIO 라이브러리가 설치되어 있지 않습니다.")
         
         # GPIO 설정
         GPIO.setmode(GPIO.BCM)
@@ -382,6 +368,10 @@ class HardwareOutputDevices:
             self.buzzer.stop()
             self.alarm_active = False
     
+    def setup_button_callback(self, callback_function):
+        """버튼 인터럽트 설정"""
+        GPIO.add_event_detect(self.button_pin, GPIO.FALLING, callback=callback_function, bouncetime=300)
+    
     def cleanup(self):
         """GPIO 리소스 정리"""
         self.set_led(False)
@@ -397,10 +387,13 @@ class FallDetector:
         self.data_buffer = deque(maxlen=seq_length)
         
         # 하드웨어 또는 에뮬레이션 모드에 따라 출력 장치 초기화
-        if HARDWARE_MODE == "RASPBERRY_PI" and HARDWARE_AVAILABLE:
+        if HARDWARE_AVAILABLE:
             try:
                 self.output_devices = HardwareOutputDevices()
                 print("실제 하드웨어 출력 장치 사용")
+                
+                # 버튼 콜백 설정
+                self.output_devices.setup_button_callback(self.stop_alarm)
             except Exception as e:
                 print(f"하드웨어 출력 장치 초기화 실패: {e}")
                 self.output_devices = OutputDeviceEmulator()
@@ -425,19 +418,27 @@ class FallDetector:
         print(f"출력 형태: {self.output_details[0]['shape']}")
         
         # 데이터 로거 설정
-        self.logger = DataLogger() if LOG_DATA else None
+        if LOG_DATA:
+            try:
+                self.logger = DataLogger()
+                print("데이터 로거 초기화 완료")
+            except Exception as e:
+                print(f"데이터 로거 초기화 실패: {e}")
+                self.logger = None
+        else:
+            self.logger = None
         
         # 통계 정보
-        self.detection_stats = {
-            'true_detections': 0,
-            'false_alarms': 0,
-            'total_samples': 0
+        self.stats = {
+            'total_samples': 0,
+            'detections': 0,
+            'last_detection_time': 0
         }
     
     def load_model(self, model_path):
         """TFLite 모델 로드"""
         try:
-            interpreter = tf.lite.Interpreter(model_path=model_path)
+            interpreter = tflite.Interpreter(model_path=model_path)
             interpreter.allocate_tensors()
             return interpreter
         except Exception as e:
@@ -453,10 +454,11 @@ class FallDetector:
             data_point['EulerX'], data_point['EulerY'], data_point['EulerZ']
         ])
         
+        # 데이터 버퍼에 추가
         self.data_buffer.append(data_array)
         
-        # 통계 카운터 증가
-        self.detection_stats['total_samples'] += 1
+        # 통계 업데이트
+        self.stats['total_samples'] += 1
         
         # 데이터 로깅 (필요한 경우)
         if LOG_DATA and self.logger:
@@ -471,14 +473,12 @@ class FallDetector:
             # 정규화 적용
             data_norm = (data_flat - self.scaler_mean) / self.scaler_scale
             
-            # 원래 형태로 복원
+            # 원래 형태로 복원 (배치 차원 추가)
             return data_norm.reshape(1, self.seq_length, self.n_features)
         except Exception as e:
             print(f"정규화 중 오류: {str(e)}")
-            print(f"데이터 형태: {data.shape}")
-            print(f"스케일러 평균 형태: {self.scaler_mean.shape}")
-            print(f"스케일러 스케일 형태: {self.scaler_scale.shape}")
-            raise
+            # 오류 시 정규화 생략
+            return np.expand_dims(data, axis=0)
     
     def predict(self):
         """낙상 예측 수행"""
@@ -503,12 +503,15 @@ class FallDetector:
             output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
             
             # 출력 형태에 따라 다르게 처리
-            if output_data.shape[1] == 1:  # 시그모이드 출력 (0~1 사이 하나의 값)
+            if output_data.size == 1:
+                # 단일 값 출력인 경우
+                fall_prob = float(output_data.flatten()[0])
+            else:
+                # 다차원 출력인 경우
                 fall_prob = float(output_data[0][0])
-                prediction = 1 if fall_prob >= 0.5 else 0
-            else:  # 소프트맥스 출력 (클래스별 확률)
-                fall_prob = float(output_data[0][1]) if output_data.shape[1] > 1 else float(output_data[0][0])
-                prediction = np.argmax(output_data[0])
+            
+            # 예측 결과 (0: 정상, 1: 낙상)
+            prediction = 1 if fall_prob >= 0.5 else 0
             
             return {
                 'prediction': int(prediction),
@@ -516,11 +519,9 @@ class FallDetector:
             }
         except Exception as e:
             print(f"예측 중 오류: {str(e)}")
-            import traceback
-            traceback.print_exc()
             return None
     
-    def trigger_alarm(self, true_label=None):
+    def trigger_alarm(self):
         """낙상 감지 시 알람 발생"""
         if not self.alarm_active:
             self.alarm_active = True
@@ -528,33 +529,17 @@ class FallDetector:
             self.output_devices.set_buzzer(True)
             print("낙상 감지! 알람 발생")
             
-            # 낙상 감지 정확도 통계 업데이트
-            if true_label is not None:
-                if true_label == 1:
-                    self.detection_stats['true_detections'] += 1
-                else:
-                    self.detection_stats['false_alarms'] += 1
+            # 통계 업데이트
+            self.stats['detections'] += 1
+            self.stats['last_detection_time'] = time.time()
     
-    def stop_alarm(self):
+    def stop_alarm(self, channel=None):
         """알람 중지"""
         if self.alarm_active:
             self.alarm_active = False
             self.output_devices.set_led(False)
             self.output_devices.set_buzzer(False)
             print("알람 중지")
-    
-    def get_stats(self):
-        """감지 통계 정보 반환"""
-        stats = self.detection_stats.copy()
-        
-        if stats['total_samples'] > 0:
-            stats['detection_rate'] = stats['true_detections'] / stats['total_samples']
-            stats['false_alarm_rate'] = stats['false_alarms'] / stats['total_samples']
-        else:
-            stats['detection_rate'] = 0
-            stats['false_alarm_rate'] = 0
-            
-        return stats
     
     def cleanup(self):
         """리소스 정리"""
@@ -567,18 +552,30 @@ def main():
     print("낙상 감지 시스템 시작")
     
     try:
-        # 하드웨어 모드에 따라 센서 초기화
-        if HARDWARE_MODE == "RASPBERRY_PI" and HARDWARE_AVAILABLE:
+        # 파일 경로 확인
+        for path, description in [
+            (MODEL_PATH, "모델 파일"),
+            (SCALER_MEAN_PATH, "스케일러 평균 파일"),
+            (SCALER_SCALE_PATH, "스케일러 스케일 파일")
+        ]:
+            if os.path.exists(path):
+                print(f"{description} 확인: {path} (존재함)")
+            else:
+                print(f"경고: {description}를 찾을 수 없습니다: {path}")
+                if description == "모델 파일":
+                    print("모델 파일이 필요합니다. 프로그램을 종료합니다.")
+                    return
+        
+        # 하드웨어 또는 시뮬레이션 모드에 따라 센서 초기화
+        if SIMULATION_MODE:
+            sensor = SimulatedSensor()
+        else:
             try:
                 sensor = MPU6050Sensor()
-                print("실제 MPU6050 센서 사용")
             except Exception as e:
                 print(f"MPU6050 센서 초기화 실패: {e}")
                 print("시뮬레이션 모드로 전환합니다.")
-                sensor = SimulatedIMUSensor()
-        else:
-            # 시뮬레이션 모드
-            sensor = SimulatedIMUSensor()
+                sensor = SimulatedSensor()
         
         # 낙상 감지기 초기화
         detector = FallDetector(
@@ -595,14 +592,11 @@ def main():
             detector.cleanup()
             
             # 통계 출력
-            stats = detector.get_stats()
             print("\n=== 감지 통계 ===")
-            print(f"총 샘플 수: {stats['total_samples']}")
-            print(f"정확한 감지: {stats['true_detections']}")
-            print(f"오탐지: {stats['false_alarms']}")
-            if stats['total_samples'] > 0:
-                print(f"감지율: {stats['detection_rate']:.2%}")
-                print(f"오탐지율: {stats['false_alarm_rate']:.2%}")
+            print(f"총 샘플 수: {detector.stats['total_samples']}")
+            print(f"낙상 감지 횟수: {detector.stats['detections']}")
+            if detector.stats['total_samples'] > 0:
+                print(f"감지율: {detector.stats['detections'] / detector.stats['total_samples']:.2%}")
             
             sys.exit(0)
         
@@ -622,7 +616,7 @@ def main():
         
         # 메인 감지 루프
         last_time = time.time()
-        alarm_duration = 0  # 알람 지속 시간 추적
+        alarm_start_time = 0
         
         while True:
             # 센서 데이터 읽기
@@ -643,22 +637,17 @@ def main():
             # 예측 결과가 있고 낙상으로 예측된 경우
             if result and result['prediction'] == 1:
                 print(f"낙상 감지! 확률: {result['fall_probability']:.2%}")
-                
-                # 실제 레이블이 있는 경우 (시뮬레이션 모드)
-                true_label = sensor_data.get('Label', None)
-                detector.trigger_alarm(true_label)
-                
-                # 알람 시작 시간 기록
-                if not detector.alarm_active:
-                    alarm_start_time = time.time()
+                detector.trigger_alarm()
+                alarm_start_time = current_time
             
             # 알람이 활성화된 경우, 3초 후 자동으로 끄기
-            if detector.alarm_active:
-                if current_time - alarm_start_time >= 3.0:
-                    detector.stop_alarm()
+            if detector.alarm_active and (current_time - alarm_start_time >= 3.0):
+                detector.stop_alarm()
             
             # 샘플링 속도 유지
-            time.sleep(1.0 / SAMPLING_RATE)
+            sleep_time = 1.0 / SAMPLING_RATE - (time.time() - current_time)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
             
     except KeyboardInterrupt:
         print("\n프로그램 종료")
@@ -672,4 +661,82 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()import os
+import time
+import numpy as np
+import pandas as pd
+# TensorFlow 대신 TFLite 런타임 사용
+import tflite_runtime.interpreter as tflite
+from collections import deque
+import threading
+import signal
+import sys
+
+# 라즈베리 파이에서 사용 가능한 경우 GPIO 라이브러리 가져오기
+try:
+    import RPi.GPIO as GPIO
+    HARDWARE_AVAILABLE = True
+except ImportError:
+    print("GPIO 라이브러리를 가져올 수 없습니다. 출력 에뮬레이션 모드로 실행합니다.")
+    HARDWARE_AVAILABLE = False
+
+# 하드웨어 센서 사용 가능한 경우 SMBus 가져오기
+try:
+    import smbus
+    SENSOR_AVAILABLE = True
+except ImportError:
+    print("SMBus 라이브러리를 가져올 수 없습니다. 센서 에뮬레이션 모드로 실행합니다.")
+    SENSOR_AVAILABLE = False
+
+# GPIO 핀 설정 (하드웨어 이용 가능한 경우만)
+LED_PIN = 17      # 낙상 경고용 LED
+BUZZER_PIN = 18   # 낙상 경고용 부저
+BUTTON_PIN = 27   # 알람 중지 버튼
+
+# MPU6050 I2C 설정
+MPU6050_ADDR = 0x68
+PWR_MGMT_1 = 0x6B
+SMPLRT_DIV = 0x19
+CONFIG = 0x1A
+GYRO_CONFIG = 0x1B
+ACCEL_CONFIG = 0x1C
+ACCEL_XOUT_H = 0x3B
+GYRO_XOUT_H = 0x43
+
+# 모델 및 데이터 설정
+MODEL_PATH = '/home/pi/Final_Project/data/models/tflite_model/fall_detection_compatible.tflite'
+SCALER_MEAN_PATH = '/home/pi/Final_Project/data/models/tflite_model/extracted_scaler_mean.npy'
+SCALER_SCALE_PATH = '/home/pi/Final_Project/data/models/tflite_model/extracted_scaler_scale.npy'
+TEST_DATA_PATH = '/home/pi/Final_Project/data/test'  # 테스트 데이터 경로 (시뮬레이션에 사용)
+SEQ_LENGTH = 50  # 시퀀스 길이 
+N_FEATURES = 9    # 특징 수 (AccX, AccY, AccZ, GyrX, GyrY, GyrZ, EulerX, EulerY, EulerZ)
+SAMPLING_RATE = 100  # Hz (데이터셋의 샘플링 레이트에 맞춤)
+
+# CSV 로깅 설정
+LOG_DATA = True
+LOG_DIR = 'logs'
+LOG_FILE = 'imu_data.csv'
+LOG_INTERVAL = 600  # 10분마다 새 로그 파일
+
+# 시뮬레이션 모드 설정
+SIMULATION_MODE = not SENSOR_AVAILABLE
+
+# 실제 MPU6050 센서 클래스
+class MPU6050Sensor:
+    def __init__(self):
+        """실제 IMU 센서 (MPU6050) 초기화 및 I2C 설정"""
+        if not SENSOR_AVAILABLE:
+            raise ImportError("smbus 라이브러리가 설치되어 있지 않습니다.")
+        
+        self.bus = smbus.SMBus(1)  # I2C 버스 1 사용
+        self.setup_mpu6050()
+        self.frame_counter = 0
+        print("MPU6050 센서 초기화 완료")
+        
+    def setup_mpu6050(self):
+        """MPU6050 센서 초기 설정"""
+        # 전원 관리 설정 - 슬립 모드 해제
+        self.bus.write_byte_data(MPU6050_ADDR, PWR_MGMT_1, 0)
+        time.sleep(0.1)  # 안정화 시간
+        
+        # 샘플링 속도 설정
