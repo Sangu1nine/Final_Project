@@ -2,7 +2,8 @@ import os
 import time
 import numpy as np
 import pandas as pd
-import tensorflow as tf
+# TensorFlow 대신 TFLite 런타임 사용
+import tflite_runtime.interpreter as tflite
 from collections import deque
 import threading
 import signal
@@ -11,16 +12,16 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
 
-# 모델 및 데이터 설정
-MODEL_PATH = 'C:/gitproject/Final_Project/data/models/tflite_model/fall_detection_compatible.tflite'
-SCALER_MEAN_PATH = 'C:/gitproject/Final_Project/data/models/tflite_model/extracted_scaler_mean.npy'
-SCALER_SCALE_PATH = 'C:/gitproject/Final_Project/data/models/tflite_model/extracted_scaler_scale.npy'
-TEST_DATA_PATH = 'C:/gitproject/Final_Project/data/test'  # 테스트 데이터 경로
+# 라즈베리 파이 경로로 변경
+MODEL_PATH = '/home/pi/Final_Project/data/models/tflite_model/fall_detection_compatible.tflite'
+SCALER_MEAN_PATH = '/home/pi/Final_Project/data/models/tflite_model/extracted_scaler_mean.npy'
+SCALER_SCALE_PATH = '/home/pi/Final_Project/data/models/tflite_model/extracted_scaler_scale.npy'
+TEST_DATA_PATH = '/home/pi/Final_Project/data/test'  # 테스트 데이터 경로
 SEQ_LENGTH = 50  # 시퀀스 길이 
 N_FEATURES = 9    # 특징 수 (AccX, AccY, AccZ, GyrX, GyrY, GyrZ, EulerX, EulerY, EulerZ)
 
 class FallDetectorTest:
-    def __init__(self, model_path, scaler_mean_path, scaler_scale_path, seq_length=100, n_features=9):
+    def __init__(self, model_path, scaler_mean_path, scaler_scale_path, seq_length=50, n_features=9):
         """낙상 감지 모델 초기화"""
         self.seq_length = seq_length
         self.n_features = n_features
@@ -43,7 +44,8 @@ class FallDetectorTest:
     def load_model(self, model_path):
         """TFLite 모델 로드"""
         try:
-            interpreter = tf.lite.Interpreter(model_path=model_path)
+            # TensorFlow 대신 TFLite 런타임 사용
+            interpreter = tflite.Interpreter(model_path=model_path)
             interpreter.allocate_tensors()
             return interpreter
         except Exception as e:
@@ -205,32 +207,53 @@ class FallDetectorTest:
         
         print(classification_report(y_test_truncated, predictions))
         
-        # 혼동 행렬 시각화
-        cm = confusion_matrix(y_test_truncated, predictions)
-        plt.figure(figsize=(8, 6))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-        plt.xlabel('Predicted Label')
-        plt.ylabel('True Label')
-        plt.title('Confusion Matrix')
-        plt.xticks([0.5, 1.5], ['Non-Fall', 'Fall'])
-        plt.yticks([0.5, 1.5], ['Non-Fall', 'Fall'])
-        plt.show()
-        
-        # ROC 곡선
-        from sklearn.metrics import roc_curve, auc
-        fpr, tpr, _ = roc_curve(y_test_truncated, probabilities[:min_len])
-        roc_auc = auc(fpr, tpr)
-        
-        plt.figure(figsize=(8, 6))
-        plt.plot(fpr, tpr, label=f'ROC curve (AUC = {roc_auc:.3f})')
-        plt.plot([0, 1], [0, 1], 'k--')
-        plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.05])
-        plt.xlabel('False Positive Rate')
-        plt.ylabel('True Positive Rate')
-        plt.title('ROC Curve')
-        plt.legend(loc="lower right")
-        plt.show()
+        # 라즈베리 파이에서는 그래프 표시를 선택적으로 활성화
+        try:
+            # 혼동 행렬 시각화
+            cm = confusion_matrix(y_test_truncated, predictions)
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+            plt.xlabel('Predicted Label')
+            plt.ylabel('True Label')
+            plt.title('Confusion Matrix')
+            plt.xticks([0.5, 1.5], ['Non-Fall', 'Fall'])
+            plt.yticks([0.5, 1.5], ['Non-Fall', 'Fall'])
+            
+            # 그래프를 이미지로 저장 (GUI가 없는 경우를 위해)
+            plt.savefig('confusion_matrix.png')
+            print("혼동 행렬 그래프가 'confusion_matrix.png'로 저장되었습니다.")
+            
+            try:
+                plt.show()  # 라즈베리 파이에 GUI가 있는 경우
+            except:
+                pass
+            
+            # ROC 곡선
+            from sklearn.metrics import roc_curve, auc
+            fpr, tpr, _ = roc_curve(y_test_truncated, probabilities[:min_len])
+            roc_auc = auc(fpr, tpr)
+            
+            plt.figure(figsize=(8, 6))
+            plt.plot(fpr, tpr, label=f'ROC curve (AUC = {roc_auc:.3f})')
+            plt.plot([0, 1], [0, 1], 'k--')
+            plt.xlim([0.0, 1.0])
+            plt.ylim([0.0, 1.05])
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title('ROC Curve')
+            plt.legend(loc="lower right")
+            
+            # 그래프를 이미지로 저장
+            plt.savefig('roc_curve.png')
+            print("ROC 곡선 그래프가 'roc_curve.png'로 저장되었습니다.")
+            
+            try:
+                plt.show()  # 라즈베리 파이에 GUI가 있는 경우
+            except:
+                pass
+        except Exception as e:
+            print(f"그래프 생성 중 오류 발생: {e}")
+            print("그래프 생성을 건너뜁니다.")
         
         return predictions, probabilities
     
@@ -264,15 +287,28 @@ class FallDetectorTest:
                         predictions.append(0)
                         print(f"[프레임 {i}] 예측 실패")
             
+            # 라즈베리 파이에서는 그래프 표시를 선택적으로 활성화
             if show_plot and predictions:
-                plt.figure(figsize=(10, 6))
-                plt.plot(predictions, label='Fall Probability')
-                plt.axhline(y=0.5, color='r', linestyle='--', label='Threshold')
-                plt.title(f'Real-time Fall Detection Simulation (True Label: {"Fall" if true_label == 1 else "Non-Fall"})')
-                plt.xlabel('Frame')
-                plt.ylabel('Fall Probability')
-                plt.legend()
-                plt.show()
+                try:
+                    plt.figure(figsize=(10, 6))
+                    plt.plot(predictions, label='Fall Probability')
+                    plt.axhline(y=0.5, color='r', linestyle='--', label='Threshold')
+                    plt.title(f'Real-time Fall Detection Simulation (True Label: {"Fall" if true_label == 1 else "Non-Fall"})')
+                    plt.xlabel('Frame')
+                    plt.ylabel('Fall Probability')
+                    plt.legend()
+                    
+                    # 그래프를 이미지로 저장
+                    plt.savefig(f'simulation_{"fall" if true_label == 1 else "nonfall"}.png')
+                    print(f"시뮬레이션 그래프가 'simulation_{'fall' if true_label == 1 else 'nonfall'}.png'로 저장되었습니다.")
+                    
+                    try:
+                        plt.show()  # 라즈베리 파이에 GUI가 있는 경우
+                    except:
+                        pass
+                except Exception as e:
+                    print(f"그래프 생성 중 오류 발생: {e}")
+                    print("그래프 생성을 건너뜁니다.")
             
             return predictions
         except Exception as e:
@@ -412,6 +448,8 @@ def main():
             print(f"비낙상 감지 정확도: {non_fall_accuracy:.2%} ({sum(non_fall_mask)}개 샘플)")
         else:
             print("비낙상 샘플이 없습니다.")
+        
+        print("\n테스트 완료!")
         
     except Exception as e:
         print(f"오류 발생: {str(e)}")
