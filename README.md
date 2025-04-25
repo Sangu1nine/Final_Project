@@ -1,0 +1,2 @@
+label_data_new.zip 링크 : https://drive.google.com/file/d/1iTApqf7RRix-OTL6bJE0LrIKOjrm5os8/view?usp=drive_link
+sensor_data_new.zip 링크 : https://drive.google.com/file/d/1uZ3tDh_qiFN49vuf409WfV0wIiiwhThJ/view?usp=drive_link
