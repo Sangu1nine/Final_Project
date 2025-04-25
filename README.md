@@ -7,10 +7,11 @@ KFall Dataset은 낙상(Fall) 및 일반 동작 데이터를 수집한 센서 �
 
 ## 📁 데이터 구성
 
-| 파일명 | 설명 |
-|:------|:-----|
-| [`label_data_new.zip`](https://drive.google.com/file/d/1iTApqf7RRix-OTL6bJE0LrIKOjrm5os8/view?usp=drive_link) | 낙상에 대한 레이블(활동 구분 정보) 파일 |
-| [`sensor_data_new.zip`](https://drive.google.com/file/d/1uZ3tDh_qiFN49vuf409WfV0wIiiwhThJ/view?usp=drive_link) | IMU 센서를 통해 수집된 가속도, 자이로, Euler 각도 데이터 파일 |
+- **[`label_data_new.zip`](https://drive.google.com/file/d/1iTApqf7RRix-OTL6bJE0LrIKOjrm5os8/view?usp=drive_link)**  
+  낙상에 대한 레이블(활동 구분 정보) 파일
+- **[`sensor_data_new.zip`](https://drive.google.com/file/d/1uZ3tDh_qiFN49vuf409WfV0wIiiwhThJ/view?usp=drive_link)**  
+  IMU 센서를 통해 수집된 가속도, 자이로, Euler 각도 데이터 파일
+
 
 ---
 
